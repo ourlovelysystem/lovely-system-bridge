@@ -1,1 +1,1 @@
-Six-wall first-person Bridge with near-plane polygon clipping.
+Six-wall Bridge rendered as perspective-mapped textured planes using triangle-strip subdivision.

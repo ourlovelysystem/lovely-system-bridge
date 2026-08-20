@@ -1,1 +1,1 @@
-Generated first-person Bridge: 91-cell hex geometry with perspective-projected boundary walls.
+Generated first-person Bridge with six perimeter wall images and restored eight-control navigation.

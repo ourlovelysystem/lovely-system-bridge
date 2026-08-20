@@ -25,10 +25,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add bridge.css bridge.js ouch.html index.html GENERATION.txt
+          git add bridge.css bridge.js ouch.html index.html GENERATION.txt assets
           if git diff --cached --quiet; then
             echo "No generated changes."
             exit 0
           fi
-          git commit -m "Generate first-person Bridge"
+          git commit -m "Generate six-wall first-person Bridge"
           git push

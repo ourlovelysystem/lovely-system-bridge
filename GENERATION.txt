@@ -1,1 +1,1 @@
-Generated static artifact: 91 positions × 6 orientations = 546 bridge view pages.
+Generated first-person Bridge: 91-cell hex geometry with perspective-projected boundary walls.

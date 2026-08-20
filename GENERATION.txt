@@ -1,1 +1,1 @@
-Generated first-person Bridge with six perimeter wall images and restored eight-control navigation.
+Six-wall first-person Bridge with near-plane polygon clipping.

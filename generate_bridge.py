@@ -1,11 +1,11 @@
 from pathlib import Path
-import math
+import json
 
 ROOT = Path(__file__).resolve().parent
-VIEWS = ROOT / "views"
 RADIUS = 5
 
-# Clockwise absolute directions in axial coordinates.
+# The Bridge is still a radius-five axial hex grid. The presentation is now
+# first person: the grid is geometry, not something painted on the screen.
 DIRECTIONS = [
     ("Forward", 0, -1),
     ("Forstar", 1, -1),
@@ -15,16 +15,12 @@ DIRECTIONS = [
     ("Forport", -1, 0),
 ]
 
-# COMPLAINT DEPARTMENT:
-# Six orientations per cell is elegant architecture until someone has to
-# manufacture 546 pages. Apparently that someone is me. Splendid.
-
 
 def cells():
     result = []
     for q in range(-RADIUS, RADIUS + 1):
         for r in range(-RADIUS, RADIUS + 1):
-            s = -q - r
+            s = -q-r
             if max(abs(q), abs(r), abs(s)) <= RADIUS:
                 result.append((q, r))
     return result
@@ -33,138 +29,118 @@ def cells():
 CELLS = cells()
 assert len(CELLS) == 91
 
+# Outer walls are the boundary edges of the 91-cell grand hexagon. JavaScript
+# turns each edge into a vertical rectangle and perspective-projects its four
+# corners from the viewer's continuously changing position and heading.
+DATA = {"radius": RADIUS, "cells": CELLS, "directions": DIRECTIONS}
 
-def valid(q, r):
-    return max(abs(q), abs(r), abs(-q-r)) <= RADIUS
+CSS = r''':root{--bg:#05090d;--ink:#e9f2f6;--line:#68879a;--glow:#bfeeff;--panel:#0c1821}*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:Arial,Helvetica,sans-serif}.bridge{position:fixed;inset:0;background:#05090d}.viewport{position:absolute;inset:0;overflow:hidden;perspective:900px;background:linear-gradient(#02070b 0 48%,#0b151b 48% 100%)}#walls{position:absolute;inset:0}.wall{position:absolute;inset:0;transform-origin:0 0;pointer-events:none}.wall img,.wall .texture{position:absolute;width:100%;height:100%;object-fit:cover;background:linear-gradient(135deg,#173342,#071018 55%,#1c3b49);border:1px solid #55788b}.wall .label{position:absolute;inset:0;display:grid;place-items:center;font-size:clamp(14px,2vw,28px);font-weight:700;letter-spacing:.16em;color:#c9f2ff;text-shadow:0 0 10px #00131c}.hud{position:absolute;z-index:100;left:50%;top:14px;transform:translateX(-50%);padding:8px 12px;background:#071018cc;border:1px solid #294758;font-size:12px;letter-spacing:.08em;white-space:nowrap}.crosshair{position:absolute;z-index:90;left:50%;top:50%;width:18px;height:18px;transform:translate(-50%,-50%);opacity:.45}.crosshair:before,.crosshair:after{content:"";position:absolute;background:#d6f7ff}.crosshair:before{left:8px;top:0;width:1px;height:18px}.crosshair:after{left:0;top:8px;width:18px;height:1px}.controls{position:absolute;z-index:110;left:50%;bottom:18px;transform:translateX(-50%);display:grid;grid-template-columns:repeat(5,52px);gap:7px}.controls button{height:46px;border:1px solid #63879c;background:#0d1d28dd;color:#dff8ff;font-size:20px;cursor:pointer}.controls button:hover{background:#173247}.help{position:absolute;z-index:100;right:14px;bottom:14px;font-size:11px;color:#89a5b6;background:#071018aa;padding:7px 9px}.floorline{position:absolute;left:0;right:0;top:48%;border-top:1px solid #243b47;opacity:.5}@media(max-width:650px){.controls{grid-template-columns:repeat(5,44px)}.controls button{height:42px}.help{display:none}}'''
 
+JS = r'''const DATA=__DATA__;
+const R=DATA.radius;
+const SQ3=Math.sqrt(3);
+const WALL_H=1.75;
+const EYE_H=.78;
+const HFOV=100*Math.PI/180; // instantaneous view remains well below 180 degrees
+const NEAR=.05;
+let viewer={q:0,r:R,x:0,y:0,heading:0};
+const cellSet=new Set(DATA.cells.map(c=>`${c[0]},${c[1]}`));
+const dirs=DATA.directions;
 
-def filename(q, r, heading):
-    name = f"q{q:+d}_r{r:+d}_h{heading}.html"
-    return "views/" + name.replace("+", "p").replace("-", "m")
+function axialCenter(q,r){return {x:SQ3*(q+r/2),y:1.5*r};}
+function valid(q,r){return cellSet.has(`${q},${r}`);}
+function vertex(cx,cy,k){let a=(30+60*k)*Math.PI/180;return {x:cx+Math.cos(a),y:cy+Math.sin(a)};}
 
-
-def move(q, r, direction_index):
-    _, dq, dr = DIRECTIONS[direction_index % 6]
-    return q + dq, r + dr
-
-
-def wall_distances(q, r):
-    s = -q-r
-    return {
-        "Forward": r + RADIUS,
-        "Aft": RADIUS - r,
-        "Forstar": RADIUS - q,
-        "Aftport": q + RADIUS,
-        "Aftstar": s + RADIUS,
-        "Forport": RADIUS - s,
-    }
-
-
-def pixel_for(q, r, uq, ur, heading):
-    dq, dr = q-uq, r-ur
-    x = math.sqrt(3) * (dq + dr/2)
-    y = 1.5 * dr
-    angle = -heading * math.pi / 3
-    xr = x*math.cos(angle) - y*math.sin(angle)
-    yr = x*math.sin(angle) + y*math.cos(angle)
-    return 50 + xr*4.6, 52 + yr*4.6
-
-
-WALL_ANGLES = {
-    "Forward": -90,
-    "Forstar": -30,
-    "Aftstar": 30,
-    "Aft": 90,
-    "Aftport": 150,
-    "Forport": 210,
+// One wall for every boundary edge. Each carries a stable name so a real
+// image can later replace the generated texture without changing geometry.
+const boundary=[];
+for(const [q,r] of DATA.cells){
+  const c=axialCenter(q,r);
+  for(let d=0;d<6;d++){
+    const [,dq,dr]=dirs[d];
+    if(valid(q+dq,r+dr)) continue;
+    // Direction d points at the outward side. With pointy-top hexes its edge
+    // endpoints are vertices d+3 and d+4 in this coordinate convention.
+    const a=vertex(c.x,c.y,(d+3)%6), b=vertex(c.x,c.y,(d+4)%6);
+    boundary.push({a,b,name:`${dirs[d][0]} WALL`,dir:d,q,r});
+  }
 }
 
+const wallRoot=document.getElementById('walls');
+for(let i=0;i<boundary.length;i++){
+  const el=document.createElement('div');el.className='wall';el.dataset.i=i;
+  const tex=document.createElement('div');tex.className='texture';
+  const lab=document.createElement('div');lab.className='label';lab.textContent=boundary[i].name;
+  tex.appendChild(lab);el.appendChild(tex);wallRoot.appendChild(el);
+}
 
-def wall_style(q, r, name, heading):
-    distance = max(0, wall_distances(q, r)[name])
-    scale = 1.7 - 0.12*distance
-    blur = max(0, (distance-1)*0.55)
-    opacity = max(.24, 1-distance*.11)
-    angle = math.radians(WALL_ANGLES[name] - heading*60)
-    radius = 39
-    x = 50 + math.cos(angle)*radius
-    y = 50 + math.sin(angle)*radius
-    size = max(11, 18*scale)
-    return (
-        f"left:{x:.2f}%;top:{y:.2f}%;font-size:{size:.1f}px;"
-        f"filter:blur({blur:.2f}px);opacity:{opacity:.2f};"
-        "transform:translate(-50%,-50%)"
-    )
+function worldViewer(){const c=axialCenter(viewer.q,viewer.r);return{x:c.x+viewer.x,y:c.y+viewer.y};}
+function project(p,z,w,h){
+  const v=worldViewer(), dx=p.x-v.x, dy=p.y-v.y;
+  const ang=-viewer.heading*Math.PI/180;
+  // Heading zero looks toward Forward, i.e. negative world Y.
+  const right=dx*Math.cos(ang)-dy*Math.sin(ang);
+  const forward=-(dx*Math.sin(ang)+dy*Math.cos(ang));
+  if(forward<=NEAR)return null;
+  const f=(w/2)/Math.tan(HFOV/2);
+  return{x:w/2+right*f/forward,y:h/2-(z-EYE_H)*f/forward,d:forward};
+}
 
+function homographyStyle(el,p0,p1,p2,p3){
+  // CSS matrix3d mapping the unit square to a screen quadrilateral. This is a
+  // projective transform: oblique walls become trapezoids instead of merely
+  // being squeezed to a guessed aspect ratio.
+  const x0=p0.x,y0=p0.y,x1=p1.x,y1=p1.y,x2=p2.x,y2=p2.y,x3=p3.x,y3=p3.y;
+  const dx1=x1-x2,dy1=y1-y2,dx2=x3-x2,dy2=y3-y2,dx3=x0-x1+x2-x3,dy3=y0-y1+y2-y3;
+  let a,b,c,d,e,f,g,h;
+  if(Math.abs(dx3)<1e-6&&Math.abs(dy3)<1e-6){a=x1-x0;b=x3-x0;c=x0;d=y1-y0;e=y3-y0;f=y0;g=0;h=0;}
+  else{const den=dx1*dy2-dx2*dy1;g=(dx3*dy2-dx2*dy3)/den;h=(dx1*dy3-dx3*dy1)/den;a=x1-x0+g*x1;b=x3-x0+h*x3;c=x0;d=y1-y0+g*y1;e=y3-y0+h*y3;f=y0;}
+  // Source is 1x1, then scaled by CSS dimensions below.
+  el.style.width='1px';el.style.height='1px';
+  el.style.transform=`matrix3d(${a},${d},0,${g},${b},${e},0,${h},0,0,1,0,${c},${f},0,1)`;
+}
 
-def move_link(q, r, h, relative):
-    direction = {"fwd": h, "back": h+3, "left": h-1, "right": h+1}[relative] % 6
-    nq, nr = move(q, r, direction)
-    if not valid(nq, nr):
-        # More complaints: humans insist on walking into walls, and software
-        # is somehow expected to have a considered response to this behavior.
-        return "../ouch.html"
-    return "../" + filename(nq, nr, h)
+function render(){
+  const w=innerWidth,h=innerHeight;
+  const els=[...wallRoot.children];
+  boundary.forEach((wall,i)=>{
+    const el=els[i];
+    const bl=project(wall.a,0,w,h),br=project(wall.b,0,w,h),tr=project(wall.b,WALL_H,w,h),tl=project(wall.a,WALL_H,w,h);
+    if(!bl||!br||!tr||!tl){el.style.display='none';return;}
+    el.style.display='block';homographyStyle(el,tl,tr,br,bl);
+    el.style.zIndex=String(Math.max(1,10000-Math.round((bl.d+br.d)*500)));
+    const fade=Math.max(.22,1-(bl.d+br.d)/34);el.style.opacity=fade.toFixed(2);
+  });
+  document.getElementById('hud').textContent=`POSITION ${viewer.q},${viewer.r} · HEADING ${Math.round(viewer.heading)}° · FOV 100°`;
+}
 
+function move(dir){
+  const h=((Math.round(viewer.heading/60)%6)+6)%6;
+  const d=(h+dir+6)%6,[,dq,dr]=dirs[d];
+  if(valid(viewer.q+dq,viewer.r+dr)){viewer.q+=dq;viewer.r+=dr;viewer.x=viewer.y=0;render();}
+  else location.href='ouch.html';
+}
+function turn(deg){viewer.heading=(viewer.heading+deg+360)%360;render();}
+document.getElementById('left').onclick=()=>turn(-15);
+document.getElementById('right').onclick=()=>turn(15);
+document.getElementById('fwd').onclick=()=>move(0);
+document.getElementById('back').onclick=()=>move(3);
+document.getElementById('reset').onclick=()=>{viewer={q:0,r:R,x:0,y:0,heading:0};render();};
+addEventListener('keydown',e=>{if(e.key==='ArrowLeft')turn(-5);if(e.key==='ArrowRight')turn(5);if(e.key==='ArrowUp')move(0);if(e.key==='ArrowDown')move(3);});
+addEventListener('resize',render);render();'''.replace('__DATA__', json.dumps(DATA, separators=(',', ':')))
 
-CSS = r''':root{--bg:#08131c;--panel:#122534;--line:#6b8aa0;--glow:#c8f3ff;--accent:#f4c96b;--danger:#ff8a80;--text:#e9f2f6}*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:Arial,Helvetica,sans-serif}body{min-height:100vh;display:grid;place-items:center;overflow:hidden}.bridge{width:min(100vw,1100px);height:min(100vh,760px);position:relative;background:radial-gradient(circle at 50% 55%,#17344a 0,#0a1721 52%,#050b10 100%);border:1px solid #29465a}.viewport{position:absolute;inset:62px 78px 72px;overflow:hidden;clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%);border:2px solid var(--line);background:linear-gradient(#102330,#08131c)}.grid{position:absolute;inset:0}.hex{position:absolute;width:42px;height:36px;transform:translate(-50%,-50%);clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%);border:1px solid #39566a;background:#102535;opacity:.72}.hex.current{background:#d8f7ff;box-shadow:0 0 18px #c8f3ff;opacity:1}.hex.center{outline:1px solid var(--accent);outline-offset:2px}.heading-arrow{position:absolute;left:50%;top:50%;transform:translate(-50%,-66%);font-size:22px;color:#001018;z-index:5;pointer-events:none}.wall{position:absolute;left:50%;top:50%;transform-origin:center center;color:var(--glow);font-weight:700;letter-spacing:.12em;text-shadow:0 0 8px rgba(200,243,255,.45);white-space:nowrap;pointer-events:none}.status{position:absolute;left:50%;top:14px;transform:translateX(-50%);font-size:13px;letter-spacing:.08em;color:#a9c2d0}.control{position:absolute;display:grid;place-items:center;width:54px;height:54px;border:1px solid #63879c;background:#0d1d28;color:#dff8ff;text-decoration:none;font-size:28px;line-height:1;user-select:none}.control:hover{background:#173247}.fwd{left:50%;top:4px;transform:translateX(-50%)}.back{left:50%;bottom:6px;transform:translateX(-50%)}.left{left:8px;top:50%;transform:translateY(-50%)}.right{right:8px;top:50%;transform:translateY(-50%)}.tl1{left:8px;top:8px}.tr1{right:8px;top:8px}.bl2{left:8px;bottom:8px}.br2{right:8px;bottom:8px}.caption{position:absolute;bottom:43px;left:50%;transform:translateX(-50%);font-size:12px;color:#89a5b6}.turbolift{position:absolute;padding:5px 8px;border:1px solid #788894;color:#d8e1e7;font-size:10px;background:#17222a}@media(max-width:700px){.bridge{height:100vh}.viewport{inset:68px 64px 78px}.control{width:46px;height:46px;font-size:24px}.hex{width:34px;height:29px}}'''
-
-
-OUCH = '''<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OUCH!</title>
-<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#12090a;color:#fff;font-family:Arial,Helvetica,sans-serif}main{width:min(720px,90vw);text-align:center;border:2px solid #ff8a80;padding:2rem;background:#221012}h1{font-size:clamp(4rem,14vw,9rem);margin:0;color:#ff8a80}p{font-size:1.35rem}.voice{margin-top:2rem;font-style:italic;color:#ddd}.choices{display:grid;gap:1rem;margin-top:2rem}button{font:inherit;padding:1rem;border:1px solid #ddd;background:#161616;color:white;cursor:pointer}button:hover{background:#292929}</style></head>
-<body><main><h1>OUCH!</h1><p>That fuckin' hurt!</p><p class="voice">A disembodied voice says: “Report to sickbay for evaluation.”</p><div class="choices"><button onclick="history.back()">I'll be okay, sir!</button><button onclick="history.back()">Why did you have to make these walls so solid?</button></div></main></body></html>'''
+OUCH = '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OUCH!</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#12090a;color:#fff;font-family:Arial,Helvetica,sans-serif}main{width:min(720px,90vw);text-align:center;border:2px solid #ff8a80;padding:2rem;background:#221012}h1{font-size:clamp(4rem,14vw,9rem);margin:0;color:#ff8a80}p{font-size:1.35rem}button{font:inherit;padding:1rem;border:1px solid #ddd;background:#161616;color:white;cursor:pointer}</style></head><body><main><h1>OUCH!</h1><p>That fuckin' hurt!</p><p>A disembodied voice says: “Report to sickbay for evaluation.”</p><button onclick="history.back()">I'll be okay, sir!</button></main></body></html>'''
 
 
 def build():
-    VIEWS.mkdir(exist_ok=True)
-    (ROOT / "bridge.css").write_text(CSS, encoding="utf-8")
-    (ROOT / "ouch.html").write_text(OUCH, encoding="utf-8")
-
-    for q, r in CELLS:
-        for h in range(6):
-            hexes = []
-            for cq, cr in CELLS:
-                x, y = pixel_for(cq, cr, q, r, h)
-                classes = ["hex"]
-                if (cq, cr) == (q, r): classes.append("current")
-                if (cq, cr) == (0, 0): classes.append("center")
-                hexes.append(f'<div class="{" ".join(classes)}" style="left:{x:.2f}%;top:{y:.2f}%"></div>')
-
-            walls = [
-                f'<div class="wall" style="{wall_style(q,r,name,h)}">{name.upper()}</div>'
-                for name in ["Forward","Forstar","Aftstar","Aft","Aftport","Forport"]
-            ]
-            tx, ty = pixel_for(0, RADIUS, q, r, h)
-            turbolift = f'<div class="turbolift" style="left:{tx:.2f}%;top:{ty:.2f}%;transform:translate(-50%,-50%)">TURBOLIFT</div>'
-
-            doc = f'''<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bridge — {q},{r} — {DIRECTIONS[h][0]}</title><link rel="stylesheet" href="../bridge.css"></head><body>
-<main class="bridge"><div class="status">POSITION {q},{r} · FACING {DIRECTIONS[h][0].upper()}</div>
-<a class="control fwd" href="{move_link(q,r,h,'fwd')}" aria-label="Move forward">↑</a>
-<a class="control back" href="{move_link(q,r,h,'back')}" aria-label="Move backward">↓</a>
-<a class="control left" href="{move_link(q,r,h,'left')}" aria-label="Move left">←</a>
-<a class="control right" href="{move_link(q,r,h,'right')}" aria-label="Move right">→</a>
-<a class="control tl1" href="../{filename(q,r,(h-1)%6)}" aria-label="Turn one orientation left">↶</a>
-<a class="control tr1" href="../{filename(q,r,(h+1)%6)}" aria-label="Turn one orientation right">↷</a>
-<a class="control bl2" href="../{filename(q,r,(h-2)%6)}" aria-label="Turn two orientations left">⟲</a>
-<a class="control br2" href="../{filename(q,r,(h+2)%6)}" aria-label="Turn two orientations right">⟳</a>
-<section class="viewport" aria-label="Bridge view"><div class="grid">{"".join(hexes)}<div class="heading-arrow">▲</div>{"".join(walls)}{turbolift}</div></section>
-<div class="caption">Grand hexagon: radius 5 · 91 positions · six orientations</div></main></body></html>'''
-            (ROOT / filename(q, r, h)).write_text(doc, encoding="utf-8")
-
-    entry = filename(0, RADIUS, 0)
-    index = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Our Lovely System — Bridge</title><style>body{{margin:0;min-height:100vh;display:grid;place-items:center;background:#071018;color:#eaf5fa;font-family:Arial,Helvetica,sans-serif}}main{{text-align:center}}a{{display:inline-block;margin-top:2rem;padding:1rem 1.4rem;border:1px solid #9fc6d8;color:#eaf5fa;text-decoration:none;background:#10212d}}</style></head><body><main><h1>BRIDGE</h1><p>The turbolift doors are open.</p><a href="{entry}">Enter the bridge</a></main></body></html>'''
-    (ROOT / "index.html").write_text(index, encoding="utf-8")
-    (ROOT / "GENERATION.txt").write_text(
-        "Generated static artifact: 91 positions × 6 orientations = 546 bridge view pages.\n",
-        encoding="utf-8",
-    )
-
-    count = len(list(VIEWS.glob("*.html")))
-    assert count == 546, count
-    print(f"Generated {count} bridge views.")
+    (ROOT / 'bridge.css').write_text(CSS, encoding='utf-8')
+    (ROOT / 'bridge.js').write_text(JS, encoding='utf-8')
+    (ROOT / 'ouch.html').write_text(OUCH, encoding='utf-8')
+    index='''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Our Lovely System — Bridge</title><link rel="stylesheet" href="bridge.css"></head><body><main class="bridge"><section class="viewport" aria-label="First person Bridge view"><div class="floorline"></div><div id="walls"></div></section><div class="crosshair"></div><div class="hud" id="hud"></div><div class="controls"><button id="left" aria-label="Turn left">↶</button><button id="back" aria-label="Move backward">↓</button><button id="reset" aria-label="Reset">⌂</button><button id="fwd" aria-label="Move forward">↑</button><button id="right" aria-label="Turn right">↷</button></div><div class="help">← → turn continuously · ↑ ↓ move by hex · walls are perspective-projected</div></main><script src="bridge.js"></script></body></html>'''
+    (ROOT / 'index.html').write_text(index, encoding='utf-8')
+    (ROOT / 'GENERATION.txt').write_text('Generated first-person Bridge: 91-cell hex geometry with perspective-projected boundary walls.\n', encoding='utf-8')
+    print('Generated first-person Bridge.')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     build()
